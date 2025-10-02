@@ -71,8 +71,24 @@ const courseSchema = new mongoose.Schema({
     photo: String,
     date: { type: Date, default: Date.now },
     end: { type: Date, default: Date.now },
-    completed: { type: Boolean, default: false }
+    completed: { type: Boolean, default: false },
+    sold: { type: String, default: "new" }
 });
+
+const publishCourseSchema = new mongoose.Schema({
+    user: String,
+    content: { type: String, required: true },
+    type: String,
+    price: String,
+    desc: String,
+    courseId: String,
+    lang: String,
+    mainTopic: String,
+    photo: String,
+    sales: { type: Number, default: 0 },
+    date: { type: Date, default: Date.now },
+});
+
 const subscriptionSchema = new mongoose.Schema({
     user: String,
     subscription: String,
@@ -104,6 +120,18 @@ const langSchema = new mongoose.Schema({
     course: String,
     lang: String,
 });
+const walletSchema = new mongoose.Schema({
+    amount: Number,
+    user: String,
+});
+const transactionSchema = new mongoose.Schema({
+    buyer: String,
+    seller: String,
+    method: String,
+    amount: String,
+    course: String,
+    date: { type: Date, default: Date.now },
+});
 const blogSchema = new mongoose.Schema({
     title: { type: String, unique: true, required: true },
     excerpt: String,
@@ -118,6 +146,18 @@ const blogSchema = new mongoose.Schema({
     featured: { type: Boolean, default: false },
     date: { type: Date, default: Date.now },
 });
+const withdrawalSchema = new mongoose.Schema({
+    user: { type: String, required: true }, // user ID or email
+    amount: { type: Number, required: true },
+    paymentMethod: { type: String, required: true, enum: ['paypal', 'stripe', 'bank-transfer'] },
+    email: { type: String }, // optional, for PayPal or Stripe
+    bankName: { type: String }, // optional, for bank transfer
+    accountNumber: { type: String }, // optional, for bank transfer
+    ifscCode: { type: String }, // optional, for bank transfer
+    status: { type: String, default: 'pending', enum: ['pending', 'approved', 'rejected'] },
+    requestedAt: { type: Date, default: Date.now },
+    processedAt: { type: Date }
+});
 
 //MODEL
 const User = mongoose.model('User', userSchema);
@@ -129,6 +169,10 @@ const NotesSchema = mongoose.model('Notes', notesSchema);
 const ExamSchema = mongoose.model('Exams', examSchema);
 const LangSchema = mongoose.model('Lang', langSchema);
 const BlogSchema = mongoose.model('Blog', blogSchema);
+const PublishCourse = mongoose.model('Publish', publishCourseSchema);
+const TransactionsScheme = mongoose.model('Transactions', transactionSchema);
+const Wallet = mongoose.model('Wallet', walletSchema);
+const Withdrawal = mongoose.model('Withdrawal', withdrawalSchema);
 
 //REQUEST
 
@@ -691,7 +735,7 @@ app.post('/api/paypal', async (req, res) => {
         }
 
         let subscriptionPlanID = planId;
-        const response = await fetch('https://api-m.sandbox.paypal.com/v1/billing/subscriptions', {
+        const response = await fetch('https://api-m.paypal.com/v1/billing/subscriptions', {
             method: 'POST',
             body: JSON.stringify(setSubscriptionPayload(subscriptionPlanID)),
             headers: {
@@ -723,7 +767,7 @@ app.post('/api/subscriptiondetail', async (req, res) => {
             const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
             const PAYPAL_APP_SECRET_KEY = process.env.PAYPAL_APP_SECRET_KEY;
             const auth = Buffer.from(PAYPAL_CLIENT_ID + ":" + PAYPAL_APP_SECRET_KEY).toString("base64");
-            const response = await fetch(`https://api-m.sandbox.paypal.com/v1/billing/subscriptions/${userDetails.subscription}`, {
+            const response = await fetch(`https://api-m.paypal.com/v1/billing/subscriptions/${userDetails.subscription}`, {
                 headers: {
                     'Authorization': 'Basic ' + auth,
                     'Content-Type': 'application/json',
@@ -813,7 +857,7 @@ app.post('/api/paypaldetails', async (req, res) => {
         const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
         const PAYPAL_APP_SECRET_KEY = process.env.PAYPAL_APP_SECRET_KEY;
         const auth = Buffer.from(PAYPAL_CLIENT_ID + ":" + PAYPAL_APP_SECRET_KEY).toString("base64");
-        const response = await fetch(`https://api-m.sandbox.paypal.com/v1/billing/subscriptions/${subscriberId}`, {
+        const response = await fetch(`https://api-m.paypal.com/v1/billing/subscriptions/${subscriberId}`, {
             headers: {
                 'Authorization': 'Basic ' + auth,
                 'Content-Type': 'application/json',
@@ -1086,7 +1130,7 @@ app.post('/api/paypalcancel', async (req, res) => {
     const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
     const PAYPAL_APP_SECRET_KEY = process.env.PAYPAL_APP_SECRET_KEY;
     const auth = Buffer.from(PAYPAL_CLIENT_ID + ":" + PAYPAL_APP_SECRET_KEY).toString("base64");
-    await fetch(`https://api-m.sandbox.paypal.com/v1/billing/subscriptions/${id}/cancel`, {
+    await fetch(`https://api-m.paypal.com/v1/billing/subscriptions/${id}/cancel`, {
         method: 'POST',
         headers: {
             'Authorization': 'Basic ' + auth,
@@ -1181,7 +1225,7 @@ app.post('/api/paypalupdate', async (req, res) => {
     const auth = Buffer.from(PAYPAL_CLIENT_ID + ":" + PAYPAL_APP_SECRET_KEY).toString("base64");
 
     try {
-        const response = await fetch(`https://api-m.sandbox.paypal.com/v1/billing/subscriptions/${id}/revise`, {
+        const response = await fetch(`https://api-m.paypal.com/v1/billing/subscriptions/${id}/revise`, {
             method: 'POST',
             headers: {
                 'Authorization': 'Basic ' + auth,
@@ -2380,6 +2424,7 @@ app.post('/api/deleteuser', async (req, res) => {
         }
 
         await Course.deleteMany({ user: userId });
+        await PublishCourse.deleteMany({ user: userId });
         await Subscription.deleteMany({ user: userId });
 
         return res.json({ success: true, message: 'Profile deleted successfully' });
@@ -2447,6 +2492,509 @@ app.get('/api/getblogs', async (req, res) => {
     } catch (error) {
         console.log(error);
         return res.json({ success: false, message: 'Internal Server Error' });
+    }
+});
+
+//POST PUBLISH
+app.post("/api/publish", async (req, res) => {
+    const { courseId, price, description } = req.body;
+
+    try {
+        // 1. Check if already published
+        const existing = await PublishCourse.findOne({ courseId });
+        if (existing) {
+            return res.json({
+                success: 2,
+                message: "Course already published",
+                id: existing._id,
+            });
+        }
+
+        // 2. Find course by ID in Course collection
+        const course = await Course.findById(courseId);
+        const courseLang = await LangSchema.findOne({ course: courseId });
+
+        if (!course) {
+            return res.json({
+                success: 1,
+                message: "Course not found",
+            });
+        }
+
+        if (course.sold === 'sold') {
+            return res.json({
+                success: 7,
+                message: "Course not for sale",
+            });
+        }
+
+        // 3. Create a new published course
+        const published = new PublishCourse({
+            user: course.user,
+            content: course.content,
+            type: course.type,
+            price: price,
+            desc: description,
+            courseId: course._id.toString(),
+            lang: courseLang.lang,
+            mainTopic: course.mainTopic,
+            photo: course.photo,
+            sales: 0,
+            date: new Date(),
+        });
+
+        await published.save();
+
+        return res.json({
+            success: 0,
+            message: "Course published successfully",
+            id: published._id,
+        });
+    } catch (error) {
+        console.error(error);
+        return res.json({
+            success: 1,
+            message: "Internal Server Error",
+        });
+    }
+});
+
+app.get("/api/saleCourse", async (req, res) => {
+    try {
+        const courses = await PublishCourse.find();
+        res.json(courses);
+    } catch (err) {
+        res.status(500).json({ error: "Server error" });
+    }
+});
+
+app.get('/api/instructor', async (req, res) => {
+    const { id, buyer } = req.query;
+
+    try {
+        const courseData = await PublishCourse.findOne({
+            _id: id
+        });
+
+        if (!courseData) {
+            console.log('Course not found')
+            return res.status(404).json({ message: 'Course not found' });
+        }
+
+        const instructor = await User.findOne({ _id: courseData.user });
+        if (!instructor) {
+            console.log('Instructor not found')
+            return res.status(404).json({ message: 'Instructor not found' });
+        }
+
+        const transactionExists = await TransactionsScheme.findOne({
+            buyer: buyer,
+            course: courseData.courseId
+        });
+
+        if (!transactionExists) {
+            return res.json({ name: instructor.mName, buy: false, courseData: courseData });
+        } else {
+            return res.json({ name: instructor.mName, buy: true, courseData: courseData });
+        }
+
+    } catch (error) {
+        console.log(error)
+        return res.status(500).json({ message: 'Server error', error });
+    }
+});
+
+app.post('/api/purchase', async (req, res) => {
+    const { courseId, buyer, seller, amount, method, fee } = req.body;
+
+    if (!courseId) {
+        return res.status(400).json({ error: 'courseId is required' });
+    }
+
+    try {
+        // Find the published course by courseId
+        const published = await PublishCourse.findOne({ courseId });
+
+        if (!published) {
+            return res.status(404).json({ error: 'Published course not found' });
+        }
+
+        // Increment sales
+        published.sales += 1;
+        await published.save();
+
+        const courseJSONdata = JSON.parse(published.content);
+        const courseMainTopic = published.mainTopic.toLowerCase();
+
+        courseJSONdata[courseMainTopic].forEach(topic => {
+            topic.subtopics.forEach(subtopic => {
+                subtopic.done = false;
+            });
+        });
+
+        const courseSTRINGdata = JSON.stringify(courseJSONdata);
+
+        const newCourse = new Course({
+            user: buyer,
+            content: courseSTRINGdata,
+            type: published.type,
+            mainTopic: published.mainTopic,
+            photo: published.photo,
+            sold: "sold"
+        });
+
+        await newCourse.save();
+
+        const newLang = new LangSchema({ course: newCourse._id, lang: published.lang });
+        await newLang.save();
+
+        const netAmount = Number(amount) - (Number(amount) * fee / 100);
+
+        const newTran = new TransactionsScheme({
+            buyer: buyer,
+            seller: seller,
+            method: method,
+            amount: netAmount,
+            course: courseId
+        });
+
+        await newTran.save();
+
+        let wallet = await Wallet.findOne({ user: seller });
+
+        if (!wallet) {
+            wallet = new Wallet({
+                user: seller,
+                amount: Number(netAmount),
+            });
+            await wallet.save();
+        } else {
+            wallet.amount = Number(wallet.amount) + Number(netAmount);
+            await wallet.save();
+        }
+
+        return res.status(201).json({
+            message: 'Course purchased successfully',
+            newCourse,
+            lang: published.lang
+        });
+
+    } catch (error) {
+        console.error('Error purchasing course:', error);
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+});
+app.post('/create-checkout-session', async (req, res) => {
+    const { courseId, price, buyer, seller } = req.body;
+
+    try {
+
+        const session = await stripe.checkout.sessions.create({
+            payment_method_types: ['card'],
+            line_items: [{
+                price_data: {
+                    currency: 'usd',
+                    product_data: {
+                        name: `Course: ${courseId}`,
+                    },
+                    unit_amount: price * 100,
+                },
+                quantity: 1,
+            }],
+            mode: 'payment',
+            success_url: `${process.env.WEBSITE_URL}/payment-done?courseId=${courseId}&buyer=${buyer}&seller=${seller}&amount=${price}`,
+            cancel_url: `${process.env.WEBSITE_URL}/dashboard/search`,
+        });
+
+        res.json({ url: session.url }); // Send redirect URL directly
+    } catch (err) {
+        console.error('Stripe session error:', err);
+        res.status(500).json({ error: err.message });
+    }
+
+});
+
+
+// GET published courses for a user
+app.get('/published-courses/:uid', async (req, res) => {
+    try {
+        const { uid } = req.params;
+        const courses = await PublishCourse.find({ user: uid });
+
+        res.status(200).json(courses);
+    } catch (error) {
+        res.status(500).json({ error: "Failed to fetch courses" });
+    }
+});
+
+// PUT update a course
+app.put("/published-courses/:courseId", async (req, res) => {
+    try {
+        const { courseId } = req.params;
+        const { price, desc } = req.body;
+        const updated = await PublishCourse.findOneAndUpdate(
+            { _id: courseId },
+            { price, desc }
+        );
+        res.status(200).json(updated);
+    } catch (error) {
+        res.status(500).json({ error: "Failed to update course" });
+    }
+});
+
+// DELETE a course
+app.delete("/published-courses/:courseId", async (req, res) => {
+    try {
+        const { courseId } = req.params;
+        await PublishCourse.findByIdAndDelete(courseId);
+        res.status(200).json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: "Failed to delete course" });
+    }
+});
+
+// Get wallet balance
+app.get('/api/wallet/:userId', async (req, res) => {
+    const { userId } = req.params;
+
+    try {
+        let wallet = await Wallet.findOne({ user: userId });
+
+        if (!wallet) {
+            // create new wallet with 0 balance
+            wallet = new Wallet({
+                amount: 0,
+                user: userId
+            });
+            await wallet.save();
+        }
+
+        res.json(wallet);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
+// Get transactions
+app.get('/api/transactions/:userId', async (req, res) => {
+    const { userId } = req.params;
+    try {
+        const transactions = await TransactionsScheme.find({
+            $or: [{ buyer: userId }, { seller: userId }]
+        }).sort({ date: -1 });
+        res.json(transactions);
+    } catch (err) {
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
+app.post('/api/withdraw', async (req, res) => {
+    try {
+        const { user, amount, paymentMethod, email, bankName, accountNumber, ifscCode } = req.body;
+
+        const withdrawalAmount = parseFloat(amount);
+
+        if (isNaN(withdrawalAmount) || withdrawalAmount <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid amount'
+            });
+        }
+
+        // Fetch user's wallet
+        const wallet = await Wallet.findOne({ user });
+        if (!wallet) {
+            return res.status(404).json({
+                success: false,
+                message: 'Wallet not found'
+            });
+        }
+
+        if (wallet.amount < withdrawalAmount) {
+            return res.status(400).json({
+                success: false,
+                message: 'Insufficient balance'
+            });
+        }
+
+        // Deduct the amount from wallet
+        wallet.amount -= withdrawalAmount;
+        await wallet.save();
+
+        const withdrawal = new Withdrawal({
+            user,
+            amount,
+            paymentMethod,
+            email,
+            bankName,
+            accountNumber,
+            ifscCode
+        });
+
+        await withdrawal.save();
+
+        // Create transaction record
+        const transaction = new TransactionsScheme({
+            buyer: user, // For withdrawal, buyer is the user
+            seller: 'system', // System processes the withdrawal
+            method: paymentMethod,
+            amount: `-${withdrawalAmount.toFixed(2)}`, // Negative amount for withdrawal
+            course: 'Withdrawal',
+        });
+        await transaction.save();
+
+        res.status(201).json({
+            success: true,
+            message: 'Withdrawal request submitted successfully',
+            data: withdrawal
+        });
+    } catch (error) {
+        console.error('Error creating withdrawal:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Internal Server Error'
+        });
+    }
+
+});
+
+app.get('/api/get-published-courses', async (req, res) => {
+    try {
+        const courses = await PublishCourse.find({});
+        res.json(courses);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+app.get('/api/sold-courses', async (req, res) => {
+    try {
+        const soldCourses = await Course.find({ sold: "sold" });
+        res.json(soldCourses);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// Update withdrawal status to paid
+app.put('/api/withdrawals/:id/mark-paid', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const withdrawal = await Withdrawal.findById(id);
+        if (!withdrawal) {
+            return res.status(404).json({ message: 'Withdrawal not found' });
+        }
+        withdrawal.status = 'approved';
+        withdrawal.processedAt = new Date();
+        await withdrawal.save();
+        res.json({ message: 'Marked as paid', withdrawal });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// Update withdrawal status to rejected
+app.put('/api/withdrawals/:id/reject', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const withdrawal = await Withdrawal.findById(id);
+        if (!withdrawal) {
+            return res.status(404).json({ message: 'Withdrawal not found' });
+        }
+        withdrawal.status = 'rejected';
+        withdrawal.processedAt = new Date();
+        await withdrawal.save();
+        res.json({ message: 'Rejected', withdrawal });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+app.get('/api/withdrawals', async (req, res) => {
+    try {
+        const withdrawals = await Withdrawal.find({});
+        res.json(withdrawals);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+app.get("/api/course/:id", async (req, res) => {
+    const { id } = req.params;
+    try {
+        const course = await Course.findById(id); // Assuming Course is the mongoose model
+        if (!course) {
+            return res.status(404).json({ success: false, message: "Course not found" });
+        }
+        res.json({ success: true, data: course });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+});
+
+function normalizeCategory(phrase) {
+    if (!phrase) return "Other";
+    const stopWords = [
+        "a", "an", "the", "and", "or", "but", "of", "in", "on", "for", "with",
+        "at", "by", "from", "up", "about", "into", "over", "after", "to", "how",
+        "what", "why", "when", "which", "where", "is", "are", "be", "this",
+        "that", "these", "those", "as", "not", "tips", "introduction", "guide",
+        "beginner", "basics", "learn"
+    ];
+    const words = phrase
+        .toLowerCase()
+        .split(" ")
+        .filter(word => !stopWords.includes(word));
+    const category = words.length ? words[0] : "Other";
+    return category.charAt(0).toUpperCase() + category.slice(1);
+}
+
+app.get("/api/categories/trending", async (req, res) => {
+    try {
+        const trending = await Course.aggregate([
+            { $sort: { date: -1 } },
+            {
+                $group: {
+                    _id: "$mainTopic",
+                    count: { $sum: 1 },
+                    course: { $first: "$$ROOT" }
+                }
+            },
+            { $sort: { count: -1 } },
+            { $limit: 6 },
+            {
+                $project: {
+                    _id: 0,
+                    category: "$_id",
+                    count: 1,
+                    course: {
+                        _id: 1,
+                        photo: "$course.photo",
+                        mainTopic: "$course.mainTopic",
+                        date: "$course.date",
+                        type: "$course.type"
+                    }
+                }
+            }
+        ]);
+
+        // ✅ Dynamic category normalization
+        const cleaned = trending.map(item => ({
+            ...item,
+            category: normalizeCategory(item.category)
+        }));
+
+        res.json(cleaned);
+    } catch (err) {
+        console.error("Error fetching trending categories:", err);
+        res.status(500).json({ error: "Internal Server Error" });
     }
 });
 
