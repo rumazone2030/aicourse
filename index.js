@@ -15,6 +15,7 @@ import showdown from 'showdown';
 import axios from 'axios';
 import Stripe from 'stripe';
 import Flutterwave from 'flutterwave-node-v3';
+import { appendFile } from 'fs';
 
 // Load environment variables
 dotenv.config();
@@ -89,6 +90,15 @@ const publishCourseSchema = new mongoose.Schema({
     date: { type: Date, default: Date.now },
 });
 
+const categoryCourse = new mongoose.Schema({
+    user: String,
+    desc: String,
+    courseId: String,
+    mainTopic: String,
+    photo: String,
+    category: String
+});
+
 const subscriptionSchema = new mongoose.Schema({
     user: String,
     subscription: String,
@@ -132,6 +142,10 @@ const transactionSchema = new mongoose.Schema({
     course: String,
     date: { type: Date, default: Date.now },
 });
+const categories = new mongoose.Schema({
+    name: String,
+    count: { type: Number, default: 0 },
+});
 const blogSchema = new mongoose.Schema({
     title: { type: String, unique: true, required: true },
     excerpt: String,
@@ -173,6 +187,9 @@ const PublishCourse = mongoose.model('Publish', publishCourseSchema);
 const TransactionsScheme = mongoose.model('Transactions', transactionSchema);
 const Wallet = mongoose.model('Wallet', walletSchema);
 const Withdrawal = mongoose.model('Withdrawal', withdrawalSchema);
+const Cate = mongoose.model('Categories', categories);
+const CategoryCourse = mongoose.model('CategoryCourse', categoryCourse);
+
 
 //REQUEST
 
@@ -2500,6 +2517,7 @@ app.post("/api/publish", async (req, res) => {
     const { courseId, price, description } = req.body;
 
     try {
+
         // 1. Check if already published
         const existing = await PublishCourse.findOne({ courseId });
         if (existing) {
@@ -2549,6 +2567,65 @@ app.post("/api/publish", async (req, res) => {
             success: 0,
             message: "Course published successfully",
             id: published._id,
+        });
+    } catch (error) {
+        console.error(error);
+        return res.json({
+            success: 1,
+            message: "Internal Server Error",
+        });
+    }
+});
+
+//POST PUBLISH
+app.post("/api/publishCategory", async (req, res) => {
+    const { courseId, categoryId } = req.body;
+
+    console.log(categoryId);
+    try {
+
+        // 1. Check if already published
+        const existing = await CategoryCourse.findOne({ courseId });
+        if (existing) {
+            return res.json({
+                success: 2,
+                message: "Course already published",
+                id: existing._id,
+            });
+        }
+
+        // 2. Find course by ID in Course collection
+        const course = await Course.findById(courseId);
+
+        if (!course) {
+            return res.json({
+                success: 1,
+                message: "Course not found",
+            });
+        }
+
+        const category = new CategoryCourse({
+            user: course.user,
+            desc: course.type,
+            courseId: course._id.toString(),
+            mainTopic: course.mainTopic,
+            photo: course.photo,
+            category: categoryId
+        });
+
+        await category.save();
+
+        // 4. Increment count in Cate (by category name)
+        await Cate.findOneAndUpdate(
+            { name: categoryId },   // search category by its name
+            { $inc: { count: 1 } }, // increase count by 1
+            { new: true }           // return updated doc (optional)
+        );
+
+        return res.json({
+            success: 0,
+            message: "Course published successfully",
+            id: category._id,
         });
     } catch (error) {
         console.error(error);
@@ -2939,64 +3016,150 @@ app.get("/api/course/:id", async (req, res) => {
     }
 });
 
-function normalizeCategory(phrase) {
-    if (!phrase) return "Other";
-    const stopWords = [
-        "a", "an", "the", "and", "or", "but", "of", "in", "on", "for", "with",
-        "at", "by", "from", "up", "about", "into", "over", "after", "to", "how",
-        "what", "why", "when", "which", "where", "is", "are", "be", "this",
-        "that", "these", "those", "as", "not", "tips", "introduction", "guide",
-        "beginner", "basics", "learn"
-    ];
-    const words = phrase
-        .toLowerCase()
-        .split(" ")
-        .filter(word => !stopWords.includes(word));
-    const category = words.length ? words[0] : "Other";
-    return category.charAt(0).toUpperCase() + category.slice(1);
-}
-
 app.get("/api/categories/trending", async (req, res) => {
     try {
-        const trending = await Course.aggregate([
-            { $sort: { date: -1 } },
-            {
-                $group: {
-                    _id: "$mainTopic",
-                    count: { $sum: 1 },
-                    course: { $first: "$$ROOT" }
-                }
-            },
-            { $sort: { count: -1 } },
-            { $limit: 6 },
-            {
-                $project: {
-                    _id: 0,
-                    category: "$_id",
-                    count: 1,
-                    course: {
-                        _id: 1,
-                        photo: "$course.photo",
-                        mainTopic: "$course.mainTopic",
-                        date: "$course.date",
-                        type: "$course.type"
-                    }
-                }
-            }
-        ]);
+        // 1. Get top 5 categories sorted by count
+        const topCategories = await Cate.find().sort({ count: -1 }).limit(5);
 
-        // ✅ Dynamic category normalization
-        const cleaned = trending.map(item => ({
-            ...item,
-            category: normalizeCategory(item.category)
-        }));
+        // 2. For each category, fetch one course
+        const results = await Promise.all(
+            topCategories.map(async (cat) => {
+                const course = await CategoryCourse.findOne({ category: cat.name }).lean();
+                return {
+                    category: cat.name,
+                    count: cat.count,
+                    course: course || null, // might be null if no course yet
+                };
+            })
+        );
 
-        res.json(cleaned);
+        res.json(results);
     } catch (err) {
         console.error("Error fetching trending categories:", err);
-        res.status(500).json({ error: "Internal Server Error" });
+        res.status(500).json({ error: "Failed to fetch trending categories" });
     }
 });
+
+// GET all categories
+app.get("/api/categories", async (req, res) => {
+    try {
+        const categories = await Cate.find().sort({ name: 1 });
+        res.json(categories);
+    } catch (err) {
+        res.status(500).json({ error: "Failed to fetch categories" });
+    }
+});
+
+// ADD new category
+app.post("/api/categories", async (req, res) => {
+    try {
+        const { name } = req.body;
+        if (!name) return res.status(400).json({ error: "Name is required" });
+
+        const category = new Cate({ name });
+        await category.save();
+        res.status(201).json(category);
+    } catch (err) {
+        res.status(500).json({ error: "Failed to add category" });
+    }
+});
+
+// DELETE category by ID
+app.delete("/api/categories/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // Find the category first
+        const category = await Cate.findById(id);
+        if (!category) {
+            return res.status(404).json({ error: "Category not found" });
+        }
+
+        // Delete all courses that have this category name
+        await CategoryCourse.deleteMany({ category: category.name });
+
+        // Now delete the category itself
+        await Cate.findByIdAndDelete(id);
+
+        res.json({ success: true, message: "Category and related courses deleted" });
+    } catch (err) {
+        console.error("Delete error:", err);
+        res.status(500).json({ error: "Failed to delete category and related courses" });
+    }
+});
+
+app.get("/api/categoriesall", async (req, res) => {
+    try {
+        const categories = await Cate.find().sort({ name: 1 }); // optional: sort alphabetically
+        res.json(categories);
+    } catch (err) {
+        res.status(500).json({ error: "Failed to fetch categories" });
+    }
+});
+
+app.get("/api/categoryCourses", async (req, res) => {
+    try {
+        const courses = await CategoryCourse.find().sort({ createdAt: -1 }); // latest first
+        res.json(courses);
+    } catch (err) {
+        res.status(500).json({ error: "Failed to fetch category courses" });
+    }
+});
+
+//STORE COURSE SHARED
+app.post('/api/courseshared', async (req, res) => {
+    const { user, content, type, mainTopic } = req.body;
+
+    unsplash.search.getPhotos({
+        query: mainTopic,
+        page: 1,
+        perPage: 1,
+        orientation: 'landscape',
+    }).then(async (result) => {
+        const photos = result.response.results;
+        const photo = photos[0].urls.regular
+        try {
+            const newCourse = new Course({ user, content, type, mainTopic, photo });
+            await newCourse.save();
+            res.json({ success: true, message: 'Course created successfully', courseId: newCourse._id });
+        } catch (error) {
+            console.log('Error', error);
+            res.status(500).json({ success: false, message: 'Internal server error' });
+        }
+    })
+});
+
+//GET SHARED COURSE
+app.get('/api/shareable', async (req, res) => {
+    try {
+        const { id } = req.query;
+        await Course.find({ _id: id }).then((result) => {
+            res.json(result);
+        });
+    } catch (error) {
+        console.log('Error', error);
+        res.status(500).send('Internal Server Error');
+    }
+});
+
+
+app.get('/api/checkPublishedCourse/:courseId', async (req, res) => {
+    try {
+        const { courseId } = req.params;
+
+        const course = await PublishCourse.findOne({ courseId });
+
+        if (!course) {
+           return res.json({ success: false, message: 'Course not published' });
+        }
+
+        return res.json({ success: true, course, id: course._id });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: 'Internal Server Error' });
+    }
+});
+
 
 //LISTEN
 app.listen(PORT, () => {
